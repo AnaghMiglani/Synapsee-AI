@@ -1,18 +1,12 @@
 from pathlib import Path
+import pandas as pd
+
 from langchain_chroma import Chroma
-from ai.app.embeddings.google_embedd import embeddings
+from langchain_core.documents import Document
+from ai.app.embeddings.hugging_face_local_embedd import embeddings
 
 BASE_DIR = Path(__file__).resolve().parents[3]
 CHROMA_DB_PATH = BASE_DIR / "local_db" / "chroma-db"
-
-def get_vector_store(collection_name="raw_material_prices"):
-    return Chroma(
-        collection_name=collection_name,
-        embedding_function=embeddings,
-        persist_directory=str(CHROMA_DB_PATH),
-    )
-vector_store = get_vector_store()
-
 
 CSV_PATH = (
     BASE_DIR
@@ -22,70 +16,71 @@ CSV_PATH = (
     / "cal_year_index(Calender_Year_Index).csv"
 )
 
-from langchain_community.document_loaders import CSVLoader
+df = pd.read_csv(CSV_PATH)
 
-loader = CSVLoader(
-    file_path=str(CSV_PATH),
-    encoding="utf-8"
-)
+documents = []
 
-documents = loader.load()
-print(f"Loaded {len(documents)} rows from CSV")
-import re
-from langchain_core.documents import Document
+for _, row in df.iterrows():
+    name = str(row.get("COMM_NAME", "")).strip()
 
-def enrich_wpi_row(doc: Document) -> Document:
-    text = doc.page_content
-    cols = text.split("\t")  # TSV structure assumed
-
-    if len(cols) < 4:
-        doc.metadata["skip"] = True
-        return doc
-
-    name = cols[0].strip()
-    code = cols[1].strip()
-    weight = cols[2].strip()
+    if not name:
+        continue
 
     if name.lower() == "all commodities":
-        doc.metadata["skip"] = True
-        return doc
+        continue
 
-    if re.match(r"^[IVX]+\s", name):  # Roman numeral sections
-        doc.metadata["skip"] = True
-        return doc
+    code = row.get("COMM_CODE", "")
+    weight = row.get("COMM_WT", "")
 
-
-    if name.startswith("("):
-        level = "category"
-    elif re.match(r"^[a-z]\.", name):
-        level = "sub_category"
-    else:
-        level = "item"
-
-    clean_name = re.sub(r"^[a-z]\.\s*|\(.*?\)\.?\s*", "", name).strip()
-
-    year_indices = {}
-    for i, col in enumerate(cols):
-        if col.startswith("INDEX"):
+    year_values = []
+    for col in df.columns:
+        if col.startswith("INDEX") and pd.notna(row[col]):
             year = col.replace("INDEX", "")
-            try:
-                year_indices[year] = float(cols[i])
-            except:
-                pass
+            year_values.append(f"{year}: {row[col]}")
 
-    doc.metadata.update({
-        "commodity": clean_name.lower(),
-        "level": level,
-        "comm_code": code,
-        "weight": float(weight),
-        "indices": year_indices
-    })
+    if not year_values:
+        continue
 
-    return doc
+    content = (
+        f"Commodity {name} (code {code}, weight {weight}). "
+        f"Wholesale Price Index values are "
+        + ", ".join(year_values)
+        + "."
+    )
 
-documents = [enrich_wpi_row(doc) for doc in documents]
-documents = [d for d in documents if not d.metadata.get("skip")]
+    documents.append(
+        Document(
+            page_content=content,
+            metadata={
+                "commodity": name.lower(),
+                "comm_code": code,
+            }
+        )
+    )
 
-vector_store.add_documents(documents)
+print(f"Prepared documents: {len(documents)}")
 
-print(f"Indexed {len(documents)} WPI rows into ChromaDB at {CHROMA_DB_PATH}")
+texts = [d.page_content for d in documents]
+metadatas = [d.metadata for d in documents]
+
+vectors = embeddings.embed_documents(texts)
+
+print("Texts:", len(texts))
+print("Vectors:", len(vectors))
+print("Vector size:", len(vectors[0]) if vectors else None)
+
+vector_store = Chroma(
+    collection_name="raw_material_prices",
+    persist_directory=str(CHROMA_DB_PATH),
+)
+
+ids = [f"wpi_{i}" for i in range(len(texts))]
+
+vector_store._collection.upsert(
+    ids=ids,
+    documents=texts,
+    metadatas=metadatas,
+    embeddings=vectors,
+)
+
+print("WPI data indexed successfully")
