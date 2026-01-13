@@ -1,11 +1,12 @@
 from google import genai
 from ai.app.services.google_trends.main import get_google_trends_serpapi, POPULAR_MARKETS
 from ai.app.core.config import GEMINI_API_KEY
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 import json
 from langchain_chroma import Chroma
 from ai.app.embeddings.hugging_face_local_embedd import embeddings
 from pathlib import Path
+from ai.app.services.scraping_amazon.scrape_amazon import scrape_via_render
 
 BASE_DIR = Path(__file__).resolve().parents[3]
 CHROMA_DB_PATH = BASE_DIR / "local_db" / "chroma-db"
@@ -73,6 +74,7 @@ Output Constraint (STRICT):
         model="gemini-2.5-flash",
         contents=SYSTEM_PROMPT
     )
+    print("Response from STEP 1 ")
     print(response)
     return(response.text)
 
@@ -82,7 +84,7 @@ def data_retrieve(
     price: float,
     region: str,
     age: Optional[str] = "All age groups"
-) -> List[str]:
+) -> Dict[Any, Any]:
 
     raw_output = trend_via_gemini(
         product_name=product_name,
@@ -100,16 +102,40 @@ def data_retrieve(
 
     rag_results = []
 
-    for material in raw_materials:
-        query = f"{material} price {geo}"
-        docs = vector_store.similarity_search(query, k=2)
+    try:
+        for material in raw_materials:
+            query = f"{material} price {geo}"
+            docs = vector_store.similarity_search(query, k=2)
 
-        for doc in docs:
-            rag_results.append(doc.page_content)
+            for doc in docs:
+                rag_results.append(doc.page_content)
+    except:
+        rag_results = ["No results found from rag, estimate the price"]
 
     final_data={}
     final_data["rag_results"] = rag_results
 
-    trends=get_google_trends_serpapi(keyword=keyword, geo=geo)
+    try:
+        trends=get_google_trends_serpapi(keyword=keyword, geo=geo)
+    except:
+        trends = ["No results found from google trends, estimate the demand"]
+    if not trends:
+        trends = ["No results found from google trends, estimate the demand"]
     final_data["trends"] = trends
 
+    try:
+        scraped_data=scrape_via_render(keyword=keyword)
+    except:
+        scraped_data="No results found from scraping, estimate the price and competition"
+    final_data["scraped_data"] = scraped_data
+
+    print("Response from STEP 2")
+    print(final_data)
+    return final_data
+
+results = data_retrieve(
+    product_name="Electric Sweater",
+    product_desc="Battery powered sweater with embedded heating elements",
+    price=3499,
+    region="India"
+)
