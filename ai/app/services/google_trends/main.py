@@ -6,7 +6,7 @@ def get_google_trends_serpapi(
     keyword,
     time_range="today 12-m",
     geo="IN",
-    search_type="web"
+    search_type="froggle"
 ):
     gprop_map = {
         "web": "",
